@@ -1,72 +1,134 @@
 // Kauko-ohjattavan veneen vastaanotinyksikkö
-// https://courses.cs.washington.edu/courses/csep567/10wi/lectures/Lecture7.pdf
-// https://sites.google.com/site/qeewiki/books/avr-guide/timers-on-the-atmega328
+// lahettimen pulssi: prescaler 32, 250 pulssia = pulssi 8000 välein. 
+// vastaanottimen pulssi 32 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
+// millisekunnissa on yhteensä 16000 pulssia, eli 64 keskeytystä.
 
-#include <VirtualWire.h>
-// VirtualWire muutettu niin että käyttää timer1 sijasta timer2
-// servot käyttää timer1
+// lahettimeta tulee 28.5 käskyä sekunnissa, yhteensä 70it koodi koko ajan peräkkäin.
 
-// moottori 115=on, 108=OFF ehkä turvallisemmat 29 ja 26
-// perasin 40+29 -- 40+85
-// peräsimen kulma  40+57=0astetta. 
+const uint8_t radioPin=2;
+const uint8_t ledPin=13;
+const uint8_t perasinPin=9; //OC1A
+const uint8_t moottoriPin=10; //OC1B
 
-int RF_RX_PIN = 2;
-int ledPin=13;
-int perasinPin=9; //OC1A
-int moottoriPin=10; //OC1B
-int kulma=57;
-int moottori=0;
+uint16_t servopulssit=0;
+uint16_t perasin=96;  //160 keskikohta, 100-228
+uint8_t moottori=114; //180=off, 188=on
+uint8_t valot=0;
+uint8_t sample,avrSample=0,edellinenSample=0,ramp=0,bitti=0,radioPreScaler=0,bittilkm,parsdata,virhe;
+boolean uusiTulossa=true, tulossa=false;
+uint16_t rxpulssit=0;
+uint16_t data=0,bitti16=0;
+uint32_t tullutData=0xFFFFFFFF, osa1, osa2;
+uint8_t o[17];
 
-void setup()
+static uint8_t symbols[] =
 {
-  vw_set_rx_pin(RF_RX_PIN);  // Setup receive pin.
-  vw_setup(2000); // Transmission speed in bits per second.
-  vw_rx_start(); // Start the PLL receiver.
+  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0,    1,    0xff,
+  0xff, 0xff, 0xff, 2,    0xff, 3,    4,    0xff, 0xff, 5,    6,    0xff, 7,    0xff, 0xff, 0xff,
+  0xff, 0xff, 0xff, 8,    0xff, 9,    10,   0xff, 0xff, 11,   12,   0xff, 13,   0xff, 0xff, 0xff,
+  0xff, 0xff, 14,   0xff, 15,   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
+
+unsigned long time;
+
+void setup() {
   pinMode(ledPin, OUTPUT);
   pinMode(perasinPin, OUTPUT);
   pinMode(moottoriPin, OUTPUT);
+  pinMode(radioPin, INPUT);
   digitalWrite(ledPin, LOW);
   digitalWrite(moottoriPin, LOW);
-                                                                
-                                                                // COMA COMB -- WGM10  // WGM = Mode = 7 =111 // COM=10 (ON alhaalla)
-  TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11) | _BV(WGM10); // 10   10   -- 11
-  //7 Fast PWM, 10bit
-                                                                             // FOC -- WGM2 CS    GM // CS=101=kerroin 1024
-  TCCR1B = _BV(WGM12) | _BV(CS12); // prescaler 100=256                      // 00  -- 1    101    
-  //timer 1 astukset: prescaler 256, COM=10 (set=0 clear=OCR1, WGM mode=7 (Fast PWM, 10bit)
-  
-  OCR1B = 108; //moottori off
-  delay(1000);
-  OCR1A = 40+29; // toinen laita
-  delay(1000);
-  OCR1A = 40+85; // toinen laita
-  delay(1000);
-  OCR1A = 40+57; // keskikohta
+  digitalWrite(perasinPin, LOW);
+//  Serial.begin(9600);
+
+//timer1
+  TCCR1A=0; // _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä, prescaler 1
+  TCCR1B=1+8;
+  OCR1A=250;
+  TIMSK1=2;
 }
- 
-void loop()
-{
-  uint8_t buf[VW_MAX_MESSAGE_LEN];
-  uint8_t buflen = VW_MAX_MESSAGE_LEN;
-  unsigned long pysaytys=0;
+
+void loop() {
+  if (tullutData!=0xFFFFFFFF) {
+    uint32_t data=tullutData;
+    tullutData=0xFFFFFFFF;
+
+    for (int i=3;i>=0;i--) {  // data ryhmitelty 6bit ryhmiksi jossa 1-0 tasaisesti. Dataa yhdessä blokissa 4bit
+      parsdata=symbols[data&0x3F];   // havaitsee myös virheitä, jos 6bit koodi ei ole muunnostaulukossa
+      if (parsdata==0xFF) break;
+      data>>=6;
+      for (int j=1;j<=4;j++) {
+        o[i*4+j]=parsdata&1;
+        parsdata>>=1;
+      }
+    }
+//        for (int i=16;i>0;i--) Serial.print(o[i]);
+//        Serial.println();
+        
+    if (parsdata!=0xFF) {
+      virhe=0;
+      virhe+=(o[1]+o[3]+o[5]+o[7] +o[9] +o[11]+o[13]+o[15])%2;   // hamming koodi. korjaa 1bit muunnoksen ja havaitsee 2bit muunnoksen
+      virhe+=2*((o[2]+o[3]+o[6]+o[7] +o[10]+o[11]+o[14]+o[15])%2);
+      virhe+=4*((o[4]+o[5]+o[6] +o[7] +o[12]+o[13]+o[14]+o[15])%2);
+      virhe+=8*((o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2);
+      if (virhe>0) o[virhe]=1-o[virhe];
+    
+      virhe=(o[16]+o[1]+o[2]+o[3]+o[4]+o[5]+o[6]+o[7]+o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2;
   
-  while (true)
-  {
-    if(vw_get_message(buf, &buflen)) {
-      pysaytys=0;
-      kulma=buf[0]%100;
-      moottori=buf[0]/100;
-      digitalWrite(ledPin, HIGH);
-      delay(1); 
-      digitalWrite(ledPin, LOW);
-      OCR1A=40+kulma;
-      OCR1B=108+(7*moottori);
-    } else if (moottori==1) {
-      if (pysaytys==0) { 
-        pysaytys=millis();
-      } else if (millis()-pysaytys>500) {
-        moottori=0;
-        OCR1B=108+(7*moottori);
+      if (virhe==0) {
+        perasin=64+o[3]+2*o[5]+4*o[6]+8*o[7]+16*o[9]+32*o[10];
+        moottori=114+5*o[11];
+        time=millis();
+
+      }
+    } else virhe=1;
+    if (virhe==1) digitalWrite(ledPin, HIGH);delay(1); digitalWrite(ledPin, LOW);
+  }
+
+  if (millis()-time>1000) moottori=114;
+}
+
+SIGNAL(TIMER1_COMPA_vect){
+  sample=(PIND&4)>>2;  // lukee pin2;
+
+  // servo koodi
+  if (servopulssit==0) PORTB|=0x06;  //   digitalWrite(perasinPin,1), digitalWrite(moottoriPin,1);
+  if (servopulssit==perasin) PORTB&=0x0FD; //    digitalWrite(perasinPin,0);
+  if (servopulssit==moottori) PORTB&=0x0FB; //    digitalWrite(moottoriPin,0);
+  servopulssit++;
+  if (servopulssit>1280) servopulssit=0; //20ms = 20*64 pulssia
+
+  radioPreScaler++;            // sample otetaan vain 4 pulssin välein
+  if (radioPreScaler>3) {
+    radioPreScaler=0;
+    avrSample+=sample;
+    if (sample!=edellinenSample) {
+      if (ramp<80) ramp+=11;
+        else ramp+=29;
+      edellinenSample=sample;
+    } else ramp=ramp+20;
+  
+    if (ramp>=160) {            // käytännössä ohjelma odottaa kunnes tulee 0xC08B, sitten lukee seuraavat 24bit
+      bitti16>>=1;
+      if (avrSample>4) bitti16|=0x8000;
+      ramp-=160;
+      avrSample=0;
+      
+      if (tulossa) {
+        if (bittilkm==15) osa1=bitti16;
+        if (bittilkm==23) {
+          tulossa=false;
+          osa2=bitti16&0xFF00;
+          osa2<<=8;
+          tullutData=osa1+osa2;
+          bittilkm=0;
+        }
+        bittilkm++;
+        
+      } else if (bitti16==0xC08B) {
+        tulossa=true;
+        bittilkm=0;
+        data=0;
       }
     }
   }
