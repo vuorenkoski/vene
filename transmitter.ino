@@ -1,11 +1,12 @@
+// versio 1.1 (1000 baudia)
 // Kauko-ohjattavan veneen lähetinyksikkö
-// koodin pituus: 20bit tauko, 16bit tunnus, 16bit koodi=70bit = käskyjen taajuus=2000/70=28.5 käskyä sekunnissa
-// kellolaitekeskeytys 16mhz/2khz=8000 pulssin välein.
-// prescaler 32, ja keskeytys 250 kohdalla. Käytetään TIMER2
+// koodin pituus: 20bit tauko, 8bit tunnus, 24bit koodi=52bit = käskyjen taajuus=1000/52=19.2 käskyä sekunnissa
+// kellolaitekeskeytys 16mhz/1khz=16000 pulssin välein.
+// prescaler 64, ja keskeytys 250 kohdalla. Käytetään TIMER2
 
 // CS22 CS21 CS20 
 // 0    1    1    Clock / 32
-
+// 1    0    0    Clock / 64
 
 int radioPin=11;              
 const int ledPin=13;
@@ -15,9 +16,8 @@ const int valoPin=10;
 
 uint8_t perasin=32;
 uint8_t moottori=0;
-uint8_t valot=0,samaData=0;
-uint8_t potikka=0;
-uint16_t alkutunnus=0xC08B,edellinen;
+uint8_t valot=0,valonappi=1;
+uint8_t alkutunnus=0xCC;
 uint32_t lahetettava=0xFFFFFFFF;
 uint8_t keskeytysLaskuri=0, tauko=0;
 uint8_t o[17];
@@ -33,13 +33,15 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   pinMode(potPin, INPUT);
   pinMode(moottoriPin, INPUT);
-  pinMode(valoPin, INPUT);
-  pinMode(radioPin, INPUT);
+  pinMode(valoPin, INPUT_PULLUP);
+  pinMode(radioPin, OUTPUT);
   digitalWrite(ledPin, LOW);
   digitalWrite(radioPin, LOW);
   
-  TCCR2A = _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä
-  TCCR2B = _BV(CS21) | _BV(CS20); // prescaler=32
+  TCCR2A=2; // CTC mode, eli katon voi määrätä OCR2 rekisterillä
+//  TCCR2B=3; // prescaler=32
+  TCCR2B=4; // prescaler=64
+
   OCR2A=250; // 2A Katto kun 250 pulssia 
   TIMSK2 |= _BV(OCIE2A); // keskeytyksen  aiheuttaa 2A rekisterin
 }
@@ -47,11 +49,15 @@ void setup() {
 void loop() {
   if (lahetettava==0xFFFFFFFF) {
     perasin=analogRead(potPin)/5;
-    if (perasin>63) perasin-=64; else perasin=0;
+    if (perasin>60) perasin-=60; else perasin=0;
     if (perasin>63) perasin=63;
-
     moottori=!digitalRead(moottoriPin);
-    valot=digitalRead(valoPin);
+    if (digitalRead(valoPin)==0) {
+      if (valonappi==1) {
+        valot=!valot;
+        valonappi=0;
+      }
+    } else valonappi=1;
     
     o[3]=perasin%2;
     o[5]=(perasin>>1)%2;
@@ -76,9 +82,7 @@ void loop() {
       lahetettava<<=6;
       lahetettava+=symbols[o[i*4+1]+o[i*4+2]*2+o[i*4+3]*4+o[i*4+4]*8];
     }
-//    for (int i=16;i>0;i--) Serial.print(o[i]);
-//    Serial.println();
-    
+//    Serial.println(lahetettava);
   }
 }
 
@@ -86,18 +90,18 @@ SIGNAL(TIMER2_COMPA_vect){
   tauko++;
   digitalWrite(radioPin,tauko%2);
   if (tauko<20) return;                   // ensin lähetetään 20bit 10101010....
-  if (keskeytysLaskuri<16) {              // tämän jälkeen 16bit tunnus 0xC08B=1100 0000 1000 1011, mikä lie tunnus
+  if (keskeytysLaskuri<8) {              // tämän jälkeen 8bit tunnus 0xCC=1100 1100
     digitalWrite(radioPin,alkutunnus&1);
     alkutunnus=alkutunnus>>1;  
   } else {
-    digitalWrite(radioPin,lahetettava&1);  // sitten 24bit koodi. eli yhteensä 70bit. eli 
+    digitalWrite(radioPin,lahetettava&1);  // sitten 24bit koodi. eli yhteensä 52bit. bitti0 lähetetään ensimmäiseksi 
     lahetettava=lahetettava>>1;    
   }
   keskeytysLaskuri++;
-  if (keskeytysLaskuri==40) {
+  if (keskeytysLaskuri==32) {
     keskeytysLaskuri=0;
     tauko=0;
     lahetettava=0xFFFFFFFF;
-    alkutunnus=0xC08B;
+    alkutunnus=0xCC;
   }  
 }
