@@ -1,24 +1,23 @@
+// versio 1.1 (1000 baudia)
 // Kauko-ohjattavan veneen vastaanotinyksikkö
-// lahettimen pulssi: prescaler 32, 250 pulssia = pulssi 8000 välein. 
-// vastaanottimen pulssi 32 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
-// millisekunnissa on yhteensä 16000 pulssia, eli 64 keskeytystä.
+// lahettimen pulssi: prescaler 64, 250 pulssia = pulssi 16000 välein. 
+// vastaanottimen pulssi 64 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
+// millisekunnissa on yhteensä 16000 kellopulssia, eli 64 keskeytystä.
 
-// lahettimeta tulee 28.5 käskyä sekunnissa, yhteensä 70it koodi koko ajan peräkkäin.
+// lahettimeta tulee 19.2 käskyä sekunnissa, yhteensä 52bit koodi koko ajan peräkkäin.
 
 const uint8_t radioPin=2;
 const uint8_t ledPin=13;
-const uint8_t perasinPin=9; //OC1A
-const uint8_t moottoriPin=10; //OC1B
+const uint8_t perasinPin=9;
+const uint8_t moottoriPin=10;
 
 uint16_t servopulssit=0;
-uint16_t perasin=96;  //160 keskikohta, 100-228
-uint8_t moottori=114; //180=off, 188=on
+uint16_t perasin=96;  //96 keskikohta, 64-127
+uint8_t moottori=114; //114=off, 119=on
 uint8_t valot=0;
-uint8_t sample,avrSample=0,edellinenSample=0,ramp=0,bitti=0,radioPreScaler=0,bittilkm,parsdata,virhe;
-boolean uusiTulossa=true, tulossa=false;
-uint16_t rxpulssit=0;
-uint16_t data=0,bitti16=0;
-uint32_t tullutData=0xFFFFFFFF, osa1, osa2;
+uint8_t sample,avrSample=0,edellinenSample=0,ramp=0,bitti=0,radioPreScaler=0,bittilkm,parsdata,virhe,bitti8=0;
+boolean tulossa=false;
+uint32_t tullutData=0xFFFFFFFF, data,data2;
 uint8_t o[17];
 
 static uint8_t symbols[] =
@@ -45,18 +44,19 @@ void setup() {
   TCCR1A=0; // _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä, prescaler 1
   TCCR1B=1+8;
   OCR1A=250;
-  TIMSK1=2;
+  TIMSK1=2; 
 }
 
 void loop() {
   if (tullutData!=0xFFFFFFFF) {
-    uint32_t data=tullutData;
+    data2=tullutData;
     tullutData=0xFFFFFFFF;
+//    Serial.println(data2);
 
     for (int i=3;i>=0;i--) {  // data ryhmitelty 6bit ryhmiksi jossa 1-0 tasaisesti. Dataa yhdessä blokissa 4bit
-      parsdata=symbols[data&0x3F];   // havaitsee myös virheitä, jos 6bit koodi ei ole muunnostaulukossa
+      parsdata=symbols[data2&0x3F];   // havaitsee myös virheitä, jos 6bit koodi ei ole muunnostaulukossa
       if (parsdata==0xFF) break;
-      data>>=6;
+      data2>>=6;
       for (int j=1;j<=4;j++) {
         o[i*4+j]=parsdata&1;
         parsdata>>=1;
@@ -78,11 +78,13 @@ void loop() {
       if (virhe==0) {
         perasin=64+o[3]+2*o[5]+4*o[6]+8*o[7]+16*o[9]+32*o[10];
         moottori=114+5*o[11];
+        valot=o[12];
+        digitalWrite(ledPin,valot);
         time=millis();
 
       }
     } else virhe=1;
-    if (virhe==1) digitalWrite(ledPin, HIGH);delay(1); digitalWrite(ledPin, LOW);
+//    if (virhe==1) digitalWrite(ledPin, HIGH);delay(1); digitalWrite(ledPin, LOW);
   }
 
   if (millis()-time>1000) moottori=114;
@@ -98,8 +100,8 @@ SIGNAL(TIMER1_COMPA_vect){
   servopulssit++;
   if (servopulssit>1280) servopulssit=0; //20ms = 20*64 pulssia
 
-  radioPreScaler++;            // sample otetaan vain 4 pulssin välein
-  if (radioPreScaler>3) {
+  radioPreScaler++;            // sample otetaan vain 8 pulssin välein
+  if (radioPreScaler==8) {
     radioPreScaler=0;
     avrSample+=sample;
     if (sample!=edellinenSample) {
@@ -109,23 +111,24 @@ SIGNAL(TIMER1_COMPA_vect){
     } else ramp=ramp+20;
   
     if (ramp>=160) {            // käytännössä ohjelma odottaa kunnes tulee 0xC08B, sitten lukee seuraavat 24bit
-      bitti16>>=1;
-      if (avrSample>4) bitti16|=0x8000;
+      bitti8>>=1;
+      bitti=0;
+      if (avrSample>4) {
+        bitti=1;
+        bitti8|=0x80;
+      }
       ramp-=160;
       avrSample=0;
       
       if (tulossa) {
-        if (bittilkm==15) osa1=bitti16;
-        if (bittilkm==23) {
-          tulossa=false;
-          osa2=bitti16&0xFF00;
-          osa2<<=8;
-          tullutData=osa1+osa2;
-          bittilkm=0;
-        }
+        data>>=1;
+        if (bitti==1) data|=0x800000;
         bittilkm++;
-        
-      } else if (bitti16==0xC08B) {
+        if (bittilkm==24) {
+          tulossa=false;
+          tullutData=data;
+        }
+      } else if (bitti8==0xCC) {
         tulossa=true;
         bittilkm=0;
         data=0;
