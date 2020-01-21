@@ -3,15 +3,18 @@
 // lahettimen pulssi: prescaler 64, 250 pulssia = pulssi 16000 välein. 
 // vastaanottimen pulssi 64 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
 // millisekunnissa on yhteensä 16000 kellopulssia, eli 64 keskeytystä.
+/( 21.1.2020: lisätty vilkkuvalot
 
 // lahettimeta tulee 19.2 käskyä sekunnissa, yhteensä 52bit koodi koko ajan peräkkäin.
 
 const uint8_t radioPin=2;
+const uint8_t valo1Pin=3;
+const uint8_t valo2Pin=4;
 const uint8_t ledPin=13;
 const uint8_t perasinPin=9;
 const uint8_t moottoriPin=10;
 
-uint16_t servopulssit=0;
+uint16_t servopulssit=0,valopulssit=0,valoVaihe=1;
 uint16_t perasin=96;  //96 keskikohta, 64-127
 uint8_t moottori=114; //114=off, 119=on
 uint8_t valot=0;
@@ -20,8 +23,7 @@ boolean tulossa=false;
 uint32_t tullutData=0xFFFFFFFF, data,data2;
 uint8_t o[17];
 
-static uint8_t symbols[] =
-{
+static uint8_t symbols[] = {
   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0,    1,    0xff,
   0xff, 0xff, 0xff, 2,    0xff, 3,    4,    0xff, 0xff, 5,    6,    0xff, 7,    0xff, 0xff, 0xff,
   0xff, 0xff, 0xff, 8,    0xff, 9,    10,   0xff, 0xff, 11,   12,   0xff, 13,   0xff, 0xff, 0xff,
@@ -34,10 +36,14 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   pinMode(perasinPin, OUTPUT);
   pinMode(moottoriPin, OUTPUT);
+  pinMode(valo1Pin, OUTPUT);
+  pinMode(valo2Pin, OUTPUT);
   pinMode(radioPin, INPUT);
   digitalWrite(ledPin, LOW);
   digitalWrite(moottoriPin, LOW);
   digitalWrite(perasinPin, LOW);
+  digitalWrite(valo1Pin, LOW);
+  digitalWrite(valo2Pin, LOW);
 //  Serial.begin(9600);
 
 //timer1
@@ -81,7 +87,6 @@ void loop() {
         valot=o[12];
         digitalWrite(ledPin,valot);
         time=millis();
-
       }
     } else virhe=1;
 //    if (virhe==1) digitalWrite(ledPin, HIGH);delay(1); digitalWrite(ledPin, LOW);
@@ -99,6 +104,20 @@ SIGNAL(TIMER1_COMPA_vect){
   if (servopulssit==moottori) PORTB&=0x0FB; //    digitalWrite(moottoriPin,0);
   servopulssit++;
   if (servopulssit>1280) servopulssit=0; //20ms = 20*64 pulssia
+  valopulssit++;
+  if (valopulssit==8000) {
+    valopulssit=0;
+    if (valot==0) {
+      PORTD&=0xE7;
+    } else if (valoVaihe==1) {
+      PORTD|=0x08;
+      PORTD&=0xEF;
+    } else {
+      PORTD&=0xF7;
+      PORTD|=0x10;
+    }
+    valoVaihe=1-valoVaihe;
+  }
 
   radioPreScaler++;            // sample otetaan vain 8 pulssin välein
   if (radioPreScaler==8) {
