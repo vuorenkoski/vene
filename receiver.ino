@@ -3,7 +3,7 @@
 // lahettimen pulssi: prescaler 64, 250 pulssia = pulssi 16000 välein. 
 // vastaanottimen pulssi 64 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
 // millisekunnissa on yhteensä 16000 kellopulssia, eli 64 keskeytystä.
-/( 21.1.2020: lisätty vilkkuvalot
+// 21.1.2020: lisätty vilkkuvalot
 
 // lahettimeta tulee 19.2 käskyä sekunnissa, yhteensä 52bit koodi koko ajan peräkkäin.
 
