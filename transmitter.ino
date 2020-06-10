@@ -1,158 +1,104 @@
 // versio 1.1 (1000 baudia)
-// Kauko-ohjattavan veneen vastaanotinyksikkö
-// lahettimen pulssi: prescaler 64, 250 pulssia = pulssi 16000 välein. 
-// vastaanottimen pulssi 64 kertaa nopeampi, eli 250. Prescaler 1 ja katto 250
-// millisekunnissa on yhteensä 16000 kellopulssia, eli 64 keskeytystä.
+// Kauko-ohjattavan veneen lähetinyksikkö
+// koodin pituus: 20bit tauko, 16bit tunnus, 16bit koodi=70bit = käskyjen taajuus=2000/70=28.5 käskyä sekunnissa
+// kellolaitekeskeytys 16mhz/2khz=8000 pulssin välein.
+// prescaler 32, ja keskeytys 250 kohdalla. Käytetään TIMER2
 
-// lahettimeta tulee 19.2 käskyä sekunnissa, yhteensä 52bit koodi koko ajan peräkkäin.
+// CS22 CS21 CS20 
+// 0    1    1    Clock / 32
 
-const uint8_t radioPin=2;
-const uint8_t ledPin=13;
-const uint8_t perasinPin=9;
-const uint8_t moottoriPin=10;
-const uint8_t vilkku1Pin=7;
-const uint8_t vilkku2Pin=8;
 
-uint16_t servopulssit=0;
-uint16_t perasin=96;  //96 keskikohta, 64-127
-uint8_t moottori=114; //114=off, 119=on
-uint8_t valot=0,vilkku=0;
-uint8_t sample,avrSample=0,edellinenSample=0,ramp=0,bitti=0,radioPreScaler=0,bittilkm,parsdata,virhe,bitti8=0;
-boolean tulossa=false;
-uint32_t tullutData=0xFFFFFFFF, data,data2,vilkkuscaler=0;
+int radioPin=11;              
+const int ledPin=13;
+const int potPin=A7;
+const int moottoriPin=12;
+const int valoPin=10;
+
+uint8_t perasin=32;
+uint8_t moottori=0;
+uint8_t valot=0,samaData=0;
+uint8_t potikka=0;
+uint16_t alkutunnus=0xC08B,edellinen;
+uint32_t lahetettava=0xFFFFFFFF;
+uint8_t keskeytysLaskuri=0, tauko=0;
 uint8_t o[17];
 
 static uint8_t symbols[] =
 {
-  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0,    1,    0xff,
-  0xff, 0xff, 0xff, 2,    0xff, 3,    4,    0xff, 0xff, 5,    6,    0xff, 7,    0xff, 0xff, 0xff,
-  0xff, 0xff, 0xff, 8,    0xff, 9,    10,   0xff, 0xff, 11,   12,   0xff, 13,   0xff, 0xff, 0xff,
-  0xff, 0xff, 14,   0xff, 15,   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    0xd,  0xe,  0x13, 0x15, 0x16, 0x19, 0x1a, 0x1c, 
+    0x23, 0x25, 0x26, 0x29, 0x2a, 0x2c, 0x32, 0x34
 };
 
-unsigned long time;
-
 void setup() {
+//  Serial.begin(9600);
   pinMode(ledPin, OUTPUT);
-  pinMode(perasinPin, OUTPUT);
-  pinMode(moottoriPin, OUTPUT);
+  pinMode(potPin, INPUT);
+  pinMode(moottoriPin, INPUT);
+  pinMode(valoPin, INPUT);
   pinMode(radioPin, INPUT);
   digitalWrite(ledPin, LOW);
-  digitalWrite(moottoriPin, LOW);
-  digitalWrite(perasinPin, LOW);
-//  Serial.begin(9600);
-  pinMode(vilkku1Pin, OUTPUT);
-  pinMode(vilkku2Pin, OUTPUT);
-  digitalWrite(vilkku1Pin, LOW);
-  digitalWrite(vilkku2Pin, LOW);
-
-//timer1
-  TCCR1A=0; // _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä, prescaler 1
-  TCCR1B=1+8;
-  OCR1A=250;
-  TIMSK1=2; 
+  digitalWrite(radioPin, LOW);
+  
+  TCCR2A = _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä
+  TCCR2B = _BV(CS21) | _BV(CS20); // prescaler=32
+  OCR2A=250; // 2A Katto kun 250 pulssia 
+  TIMSK2 |= _BV(OCIE2A); // keskeytyksen  aiheuttaa 2A rekisterin
 }
 
 void loop() {
-  if (tullutData!=0xFFFFFFFF) {
-    data2=tullutData;
-    tullutData=0xFFFFFFFF;
-//    Serial.println(data2);
+  if (lahetettava==0xFFFFFFFF) {
+    perasin=analogRead(potPin)/5;
+    if (perasin>63) perasin-=64; else perasin=0;
+    if (perasin>63) perasin=63;
 
-    for (int i=3;i>=0;i--) {  // data ryhmitelty 6bit ryhmiksi jossa 1-0 tasaisesti. Dataa yhdessä blokissa 4bit
-      parsdata=symbols[data2&0x3F];   // havaitsee myös virheitä, jos 6bit koodi ei ole muunnostaulukossa
-      if (parsdata==0xFF) break;
-      data2>>=6;
-      for (int j=1;j<=4;j++) {
-        o[i*4+j]=parsdata&1;
-        parsdata>>=1;
-      }
-    }
-//        for (int i=16;i>0;i--) Serial.print(o[i]);
-//        Serial.println();
-        
-    if (parsdata!=0xFF) {
-      virhe=0;
-      virhe+=(o[1]+o[3]+o[5]+o[7] +o[9] +o[11]+o[13]+o[15])%2;   // hamming koodi. korjaa 1bit muunnoksen ja havaitsee 2bit muunnoksen
-      virhe+=2*((o[2]+o[3]+o[6]+o[7] +o[10]+o[11]+o[14]+o[15])%2);
-      virhe+=4*((o[4]+o[5]+o[6] +o[7] +o[12]+o[13]+o[14]+o[15])%2);
-      virhe+=8*((o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2);
-      if (virhe>0) o[virhe]=1-o[virhe];
+    moottori=!digitalRead(moottoriPin);
+    valot=digitalRead(valoPin);
     
-      virhe=(o[16]+o[1]+o[2]+o[3]+o[4]+o[5]+o[6]+o[7]+o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2;
+    o[3]=perasin%2;
+    o[5]=(perasin>>1)%2;
+    o[6]=(perasin>>2)%2;
+    o[7]=(perasin>>3)%2;
+    o[9]=(perasin>>4)%2;
+    o[10]=(perasin>>5)%2;
+    o[11]=moottori;
+    o[12]=valot;
+    o[13]=moottori; // reserved
+    o[14]=moottori; // reserved
+    o[15]=0; // aina 0
   
-      if (virhe==0) {
-        perasin=64+o[3]+2*o[5]+4*o[6]+8*o[7]+16*o[9]+32*o[10];
-        moottori=114+5*o[11];
-        valot=o[12];
-        digitalWrite(ledPin,valot);
-        time=millis();
+    o[1]=(o[3]+o[5] +o[7] +o[9] +o[11]+o[13]+o[15])%2;
+    o[2]=(o[3]+o[6] +o[7] +o[10]+o[11]+o[14]+o[15])%2;
+    o[4]=(o[5]+o[6] +o[7] +o[12]+o[13]+o[14]+o[15])%2;
+    o[8]=(o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2;
+    o[16]=(o[1]+o[2]+o[3]+o[4]+o[5]+o[6]+o[7]+o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2;
 
-      }
-    } else virhe=1;
-//    if (virhe==1) digitalWrite(ledPin, HIGH);delay(1); digitalWrite(ledPin, LOW);
+    lahetettava=0;
+    for (int i=0;i<4;i++) { // jokainen 4bit ryhmästä tehdään 6bit ryhmä jossa tasainen 0-1 jakauma. Viesti yhteensä 24bit
+      lahetettava<<=6;
+      lahetettava+=symbols[o[i*4+1]+o[i*4+2]*2+o[i*4+3]*4+o[i*4+4]*8];
+    }
+//    for (int i=16;i>0;i--) Serial.print(o[i]);
+//    Serial.println();
+    
   }
-
-  if (millis()-time>1000) moottori=114;
 }
 
-SIGNAL(TIMER1_COMPA_vect){
-  sample=(PIND&4)>>2;  // lukee pin2;
-
-  // servo koodi
-  if (servopulssit==0) PORTB|=0x06;  //   digitalWrite(perasinPin,1), digitalWrite(moottoriPin,1);
-  if (servopulssit==perasin) PORTB&=0x0FD; //    digitalWrite(perasinPin,0);
-  if (servopulssit==moottori) PORTB&=0x0FB; //    digitalWrite(moottoriPin,0);
-  servopulssit++;
-  if (servopulssit>1280) servopulssit=0; //20ms = 20*64 pulssia
-
-  // vilkut
-  vilkkuskaler++;
-  if (vilkkuskaler==400) {
-    vilkkuskaler=0;
-    if (valot==0) {
-// kummatkin 0, suoraan portteihin      
-    } else {
-      digitalWrite(vilkku1Pin, vilkku);
-      digitalWrite(vilkku2Pin, !vilkku);
-      vilkku=!vilkku;      
-    }
+SIGNAL(TIMER2_COMPA_vect){
+  tauko++;
+  digitalWrite(radioPin,tauko%2);
+  if (tauko<20) return;                   // ensin lähetetään 20bit 10101010....
+  if (keskeytysLaskuri<16) {              // tämän jälkeen 16bit tunnus 0xC08B=1100 0000 1000 1011, mikä lie tunnus
+    digitalWrite(radioPin,alkutunnus&1);
+    alkutunnus=alkutunnus>>1;  
+  } else {
+    digitalWrite(radioPin,lahetettava&1);  // sitten 24bit koodi. eli yhteensä 70bit. eli 
+    lahetettava=lahetettava>>1;    
   }
-
-  // radio
-  radioPreScaler++;            // sample otetaan vain 8 pulssin välein
-  if (radioPreScaler==8) {
-    radioPreScaler=0;
-    avrSample+=sample;
-    if (sample!=edellinenSample) {
-      if (ramp<80) ramp+=11;
-        else ramp+=29;
-      edellinenSample=sample;
-    } else ramp=ramp+20;
-  
-    if (ramp>=160) {            // käytännössä ohjelma odottaa kunnes tulee 0xC08B, sitten lukee seuraavat 24bit
-      bitti8>>=1;
-      bitti=0;
-      if (avrSample>4) {
-        bitti=1;
-        bitti8|=0x80;
-      }
-      ramp-=160;
-      avrSample=0;
-      
-      if (tulossa) {
-        data>>=1;
-        if (bitti==1) data|=0x800000;
-        bittilkm++;
-        if (bittilkm==24) {
-          tulossa=false;
-          tullutData=data;
-        }
-      } else if (bitti8==0xCC) {
-        tulossa=true;
-        bittilkm=0;
-        data=0;
-      }
-    }
-  }
+  keskeytysLaskuri++;
+  if (keskeytysLaskuri==40) {
+    keskeytysLaskuri=0;
+    tauko=0;
+    lahetettava=0xFFFFFFFF;
+    alkutunnus=0xC08B;
+  }  
 }
