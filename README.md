@@ -1,4 +1,4 @@
-# Kaukoohjattava vene
+# Kauko-ohjattava vene
 
 Mikrokontrollerin koodi kauko-ohjattavalle veneelle.
 - kummassakin päässä mikrokontrollerina ATMEGA-328, 16mhz
