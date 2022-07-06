@@ -20,8 +20,8 @@ const uint8_t perasinPin=9;
 const uint8_t moottoriPin=10;
 
 uint16_t servopulssit=0,valopulssit=0,valoVaihe=1;
-uint16_t perasin=96;  //96 keskikohta, 64-127
-uint8_t moottori=114; //114=off, 119=on
+uint16_t perasin=25;
+uint8_t moottori=28; 
 uint8_t valot=0;
 uint8_t sample,avrSample=0,edellinenSample=0,ramp=0,bitti=0,radioPreScaler=0,bittilkm,parsdata,virhe,bitti8=0;
 boolean tulossa=false;
@@ -50,6 +50,12 @@ void setup() {
   digitalWrite(valo1Pin, LOW);
   digitalWrite(valo2Pin, LOW);
 //  Serial.begin(9600);
+  digitalWrite(valo1Pin, HIGH);
+  delay(1000);
+  digitalWrite(valo1Pin, LOW);
+  digitalWrite(valo2Pin, HIGH);
+  delay(1000);
+  digitalWrite(valo2Pin, LOW);
 
 //timer1
   TCCR1A=0; // _BV(WGM21); // CTC mode, eli katon voi määrätä OCR2 rekisterillä, prescaler 1
@@ -87,7 +93,8 @@ void loop() {
       virhe=(o[16]+o[1]+o[2]+o[3]+o[4]+o[5]+o[6]+o[7]+o[8]+o[9]+o[10]+o[11]+o[12]+o[13]+o[14]+o[15])%2;
   
       if (virhe==0) {
-        perasin=10+(o[3]+2*o[5]+4*o[6]+8*o[7]+16*o[9]+32*o[10])/3; // Aiemmin 64
+        perasin=15+(o[3]+2*o[5]+4*o[6]+8*o[7]+16*o[9]+32*o[10])/3; // Aiemmin 64
+//        Serial.println(perasin);
         moottori=28+2*o[11]; //Aiemmin 114
         valot=o[12];
         digitalWrite(ledPin,valot);
@@ -104,7 +111,7 @@ void loop() {
 //    }
   }
 
-  if (millis()-time>1000) moottori=114;
+  if (millis()-time>1000) moottori=28;
 }
 
 SIGNAL(TIMER1_COMPA_vect){
